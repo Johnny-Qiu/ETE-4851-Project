@@ -1,6 +1,10 @@
 # Autonomous Ground Vehicle (AGV)
 ### ETE-4851 | Four-Wheel-Drive Autonomous Robotics Project
 
+Latest sensor dashboard and manual WASD software from November 23, 2026:
+[Updated Files](Updated%20Files/README.md). Includes runtime files, camera and
+LiDAR launch scripts, firmware references, tests, and restart instructions.
+
 ## Project Overview
 
 This repository contains the mechanical and electrical documentation, embedded firmware, ROS 2 software, simulation, and testing procedures for our autonomous ground vehicle (AGV).

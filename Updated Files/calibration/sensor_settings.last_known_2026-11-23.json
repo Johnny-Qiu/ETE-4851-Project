@@ -1,0 +1,6 @@
+{
+  "laser_frame": "laser",
+  "laser_z_m": 0.3048,
+  "laser_yaw_rad": 3.141592653589793,
+  "ina_shunt_ohms": 0.1
+}

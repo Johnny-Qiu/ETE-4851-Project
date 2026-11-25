@@ -1,0 +1,50 @@
+2026-11-04 diagnostic session
+
+Connected ST-LINK: NUCLEO-F767ZI, serial 0671FF575251717867104619.
+Before modification, live RCC APB1ENR=10240417 (I2C1 clock enabled),
+I2C1 CR1=1 (peripheral enabled), GPIOB MODER=180A4A81,
+OTYPER=00000300, AFRH=00B00044 (PB8/PB9 open-drain AF4).
+GPIOB IDR sampled as 00000088: PB8 and PB9 both low.
+These are live reads, not assertions based on the source or INA=1 marker.
+
+Full pre-update 2 MB flash saved as before_diagnostic_flash.bin.
+Diagnostic driver passed ARM GCC -Wall -Wextra -Werror syntax checking.
+MATLAB protocol regression tests passed (including servo independence,
+timeouts, stop, CRC/session/replay faults and telemetry capacity).
+Simulink generated and compiled firmware successfully.
+Upload_Vehicle.ps1 programmed and verified the diagnostic image.
+No motor power or calibration test was performed.
+
+COM7 telemetry read directly after upload:
+INA=1 ST1=0 ST2=0 IDG=1 IC=7 IL=0 IE1=9 IE2=9
+ARM=0 D1=+000.0 D2=+000.0
+Other samples show IC=1 while GPIO bus recovery is active, as expected.
+Recovery did not restore communication. Both pins still read low.
+No claim of a successful sensor repair or working current measurements.
+
+Existing original vehicle_drive and wasd_demo firmware files were not
+replaced. Diagnostic sources/image are isolated in this directory.
+Generated diagnostics retain CMDERR as the last field for dashboard parsing.
+
+Subsequent disconnected-pin test (user confirmed SDA/SCL removed):
+Halted core; disabled I2C1; changed only PB8/PB9 to GPIO inputs.
+Both internal pull-ups: GPIOB IDR=00000388 (both pins high).
+PB8 pull-up/PB9 pull-down: IDR=00000188 (SCL high, SDA low).
+PB8 pull-down/PB9 pull-up: IDR=00000288 (SCL low, SDA high).
+Both pull-downs: IDR=00000088 (both pins low).
+Both MCU inputs respond independently to weak internal pulls. This does
+not verify sensor wiring continuity or successful I2C transactions.
+Reset and resumed core afterward, restoring flashed diagnostic firmware
+configuration; no flash write performed during this input test.
+
+After user reconnected SCL/SDA (same session):
+With core halted and I2C disabled, both PB8/PB9 inputs read high with
+no internal pulls, with internal pull-ups, and with weak pull-downs.
+GPIOB IDR=00000388 in all three cases, consistent with external pull-ups.
+Reset/resumed afterward. Fresh COM7 telemetry then confirmed ST1=1,
+IE1=0, IC=7 across five consecutive samples after discarding input buffer.
+ST2=0/IE2=1 is consistent with no second sensor at 0x41.
+ARM=0 and both duties remained zero. SH1=-1 to -3 raw counts; BV1=336 mV.
+This verifies communication with sensor 1, not loaded-current accuracy or
+motor-supply suitability. Cause of the earlier low lines is unproven:
+reconnection, power cycling and the temporary pin test all intervened.
