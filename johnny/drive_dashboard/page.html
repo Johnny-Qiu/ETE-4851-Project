@@ -58,7 +58,7 @@ details{margin-top:4px}summary{cursor:pointer;color:var(--dim);font-weight:600}.
 </details></section>
 <section class="card span2"><div class="cardhead"><h2>Front camera</h2><button class="small" data-rot="front">Rotate</button></div><div class="screen"><img id="front" alt="Front camera" hidden></div><p class="hint" id="frontStatus">Waiting</p></section>
 <section class="card span2"><div class="cardhead"><h2>Rear camera</h2><button class="small" data-rot="rear">Rotate</button></div><div class="screen"><img id="rear" alt="Rear camera" hidden></div><p class="hint" id="rearStatus">Waiting</p></section>
-<section class="card span2"><div class="cardhead"><h2>LiDAR</h2><span class="hint" id="lidarStatus">Waiting</span></div><div class="screen"><canvas id="scan" width="600" height="450"></canvas></div><p class="hint" id="frame">Rings every metre · missing returns are unknown space</p></section>
+<section class="card span2"><div class="cardhead"><h2>LiDAR</h2><span><button class="small" id="lidarMirror" title="LiDAR mounted upside down: mirror left/right">Mirror: on</button> <button class="small" id="lidarRotate">Rotate</button></span></div><div class="screen"><canvas id="scan" width="600" height="450"></canvas></div><p class="hint"><span id="lidarStatus">Waiting</span> · <span id="frame">Rings every metre · missing returns are unknown space</span></p></section>
 <section class="card span3"><h2>IMU</h2><p class="hint" id="imuStatus">Waiting</p><div class="kv" id="imu"></div><p class="hint">Calibration System / Gyro / Accel / Mag, 0–3. Lost when the Nucleo loses power.</p></section>
 <section class="card span3"><h2>Shared battery supply</h2><p class="hint" id="currentStatus">Waiting</p><div class="kv" id="current"></div><p class="hint" id="shunt"></p><p class="hint" id="serialStatus" style="color:var(--warn)"></p></section>
 </main>
@@ -147,7 +147,21 @@ function renderDrive(d){if(!d)return;drive=d;$('driveCard').hidden=false;
 const fmt=(v,n=2)=>typeof v==='number'&&Number.isFinite(v)?v.toFixed(n):'—';
 function rows(id,items){$(id).replaceChildren(...items.flatMap(([a,b])=>{const x=document.createElement('b'),y=document.createElement('span');x.textContent=a;y.textContent=b;return [x,y];}));}
 async function get(p){const r=await fetch(p,{headers:H,signal:AbortSignal.timeout(2500),cache:'no-store'});if(!r.ok)throw Error(r.status===401?'Access denied: open the complete link with #token=…':'Feed unavailable');return r;}
-function draw(scan){const c=$('scan'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);x.strokeStyle='#2a3e50';for(let i=1;i<=4;i++){x.beginPath();x.arc(300,225,i*50,0,Math.PI*2);x.stroke();}x.fillStyle='#4fa3ff';x.fillRect(296,221,8,8);if(scan.fresh){x.fillStyle='#5fd9b0';for(const [a,b] of scan.points)x.fillRect(300-b*50,225-a*50,2,2);}$('lidarStatus').textContent=scan.fresh?'Live · '+scan.points.length+' returns':'No fresh scan';$('frame').textContent=scan.frame_label+' · rings every metre';}
+// LiDAR view: display-only orientation. Mirror flips left/right (upside-down mount scans the other
+// way round); Rotate turns the view in 90-degree steps. Both saved in this browser.
+let lidarMirror=true,lidarRot=0;
+try{const m=localStorage.getItem('lidar-mirror');if(m!==null)lidarMirror=m==='1';const r=+localStorage.getItem('lidar-rot');if([0,90,180,270].includes(r))lidarRot=r;}catch(e){}
+function paintLidarButtons(){$('lidarMirror').textContent='Mirror: '+(lidarMirror?'on':'off');}
+$('lidarMirror').onclick=()=>{lidarMirror=!lidarMirror;try{localStorage.setItem('lidar-mirror',lidarMirror?'1':'0');}catch(e){}paintLidarButtons();$('lidarMirror').blur();};
+$('lidarRotate').onclick=()=>{lidarRot=(lidarRot+90)%360;try{localStorage.setItem('lidar-rot',lidarRot);}catch(e){}$('lidarRotate').blur();};
+paintLidarButtons();
+function draw(scan){const c=$('scan'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);x.strokeStyle='#2a3e50';for(let i=1;i<=4;i++){x.beginPath();x.arc(300,225,i*50,0,Math.PI*2);x.stroke();}
+ const r=lidarRot*Math.PI/180,cs=Math.cos(r),sn=Math.sin(r);
+ const place=(f,l)=>{if(lidarMirror)l=-l;const f2=f*cs-l*sn,l2=f*sn+l*cs;return [300-l2*50,225-f2*50];};  // f=forward, l=left (metres)
+ x.fillStyle='#4fa3ff';x.fillRect(296,221,8,8);
+ const [tx,ty]=place(.75,0);x.fillStyle='#9db0c1';x.font='13px system-ui';x.textAlign='center';x.fillText('▲ front',tx,ty);
+ if(scan.fresh){x.fillStyle='#5fd9b0';for(const [a,b] of scan.points){const [px,py]=place(a,b);x.fillRect(px,py,2,2);}}
+ $('lidarStatus').textContent=scan.fresh?'Live · '+scan.points.length+' returns':'No fresh scan';$('frame').textContent=scan.frame_label+(lidarMirror?' · mirrored':'')+(lidarRot?` · rotated ${lidarRot}°`:'')+' · rings every metre';}
 for(const b of document.querySelectorAll('[data-rot]')){const n=b.dataset.rot;let a=n==='front'?180:0;try{const s=localStorage.getItem('sensor-view-angle-'+n);if(s!==null&&[0,90,180,270].includes(+s))a=+s;}catch(e){}const ap=()=>{$(n).style.transform='rotate('+a+'deg)';};b.onclick=()=>{a=(a+90)%360;ap();b.blur();try{localStorage.setItem('sensor-view-angle-'+n,a);}catch(e){}};ap();}
 // Camera controls: applied live with v4l2-ctl on the Pi. Exposure is capped at 330 (33 ms) so
 // manual exposure never drops below 30 fps. Auto exposure is not capped and can.
@@ -159,6 +173,7 @@ for(const name of ['front','rear']){
   <label class="slider"><span>Exposure</span><b data-k="exposureLbl"></b></label><input type="range" data-k="exposure" min="1" max="330" step="1">
   <label class="slider"><span>Gain</span><b data-k="gainLbl"></b></label><input type="range" data-k="gain" min="0" max="100" step="1">
   <label class="slider"><span>Brightness</span><b data-k="brightnessLbl"></b></label><input type="range" data-k="brightness" min="0" max="255" step="1">
+  <p class="hint" style="color:var(--warn)">NexiGo N60: the camera accepts exposure and gain but its firmware ignores them (measured 2026-11-27: 0.5–33 ms and gain 0–100 gave the same image). Brightness works.</p>
   <p class="hint">Resets when the camera script restarts. To keep these, start it with:<br><code data-k="cmd"></code></p>`;
  document.querySelector(`[data-rot="${name}"]`).closest('section').append(box);
  const q=k=>box.querySelector(`[data-k="${k}"]`),ui=camUI[name]={box,q,editUntil:0,timer:null,known:false};
