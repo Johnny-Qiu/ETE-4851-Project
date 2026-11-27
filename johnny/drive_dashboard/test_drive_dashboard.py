@@ -12,7 +12,23 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / 'Updated Files' / 'wasd_demo'))
 sys.path.insert(0, str(HERE))
 from dashboard import Bridge  # noqa: E402
-from drive_dashboard import DRIVE_ACTIONS, apply_drive_command  # noqa: E402
+from drive_dashboard import DRIVE_ACTIONS, apply_drive_command, set_camera  # noqa: E402
+
+
+class CameraControlValidationTests(unittest.TestCase):
+    """Validation happens before any v4l2-ctl call, so these never touch a camera."""
+    def good(self, **change):
+        return dict(dict(camera='front', auto=False, exposure=330, gain=30, brightness=128), **change)
+
+    def test_exposure_capped_at_one_30fps_frame(self):
+        with self.assertRaises(ValueError):
+            set_camera(self.good(exposure=331))
+
+    def test_rejects_unknown_camera_and_bad_types(self):
+        for bad in (self.good(camera='side'), self.good(auto='yes'), self.good(gain=101),
+                    self.good(brightness=-1), self.good(exposure=12.5)):
+            with self.assertRaises(ValueError):
+                set_camera(bad)
 
 
 class CombinedDriveTests(unittest.TestCase):

@@ -11,6 +11,9 @@
 WIDTH=${WIDTH:-640}; HEIGHT=${HEIGHT:-480}; FPS=${FPS:-30}
 FORMAT=${FORMAT:-yuyv}               # yuyv (raw, cheapest) | yuyv2rgb | mjpeg2rgb (broken here, see above)
 EXPOSURE=${EXPOSURE:-100}; GAIN=${GAIN:-30}; BRIGHTNESS=${BRIGHTNESS:-128}
+if [ "$EXPOSURE" != auto ] && [ "$EXPOSURE" -gt 330 ] 2>/dev/null; then
+  echo "EXPOSURE=$EXPOSURE is longer than one 30 fps frame; capping at 330 (33 ms)"; EXPOSURE=330
+fi
 case "$FPS" in *.*) FPS_F=$FPS ;; *) FPS_F=$FPS.0 ;; esac   # usb_cam wants a double
 FRONT=/dev/v4l/by-id/usb-webcamvendor_NexiGo_N60_FHD_Webcam_Audio_Sep_8_2023-18:48:27-N60-video-index0
 REAR=/dev/v4l/by-id/usb-webcamvendor_NexiGo_N60_FHD_Webcam_Audio_Apr_21_2023-20:00:20-N60-video-index0

@@ -14,6 +14,7 @@ import math
 from pathlib import Path
 import secrets
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -22,6 +23,56 @@ from urllib.parse import urlsplit
 
 PACKAGE = Path(__file__).resolve().parents[2] / 'Updated Files'
 DRIVE_ACTIONS = ('arm', 'stop', 'keys', 'heartbeat', 'configure', 'steer')
+
+# Same devices as johnny/cameras/start_cameras_fast.sh. Controls are changed live with v4l2-ctl
+# while usb_cam streams; they reset when the camera is unplugged or the camera script restarts.
+CAMERAS = {
+    'front': '/dev/v4l/by-id/usb-webcamvendor_NexiGo_N60_FHD_Webcam_Audio_Sep_8_2023-18:48:27-N60-video-index0',
+    'rear': '/dev/v4l/by-id/usb-webcamvendor_NexiGo_N60_FHD_Webcam_Audio_Apr_21_2023-20:00:20-N60-video-index0',
+}
+# Exposure is in 100 us units. 330 = 33 ms, just under one frame at 30 fps, so manual exposure
+# can never lower the frame rate. Auto exposure has no such cap (it dropped to ~25 fps in room light).
+CAMERA_LIMITS = dict(exposure=(1, 330), gain=(0, 100), brightness=(0, 255))
+
+
+def read_camera(device):
+    if not Path(device).exists():
+        return None
+    out = subprocess.run(['v4l2-ctl', '-d', device, '-C', 'auto_exposure,exposure_time_absolute,gain,brightness'],
+                         capture_output=True, text=True, timeout=2)
+    if out.returncode:
+        return None
+    values = {}
+    for line in out.stdout.splitlines():
+        key, _, rest = line.partition(':')
+        if rest.split():
+            values[key.strip()] = int(rest.split()[0])
+    return dict(auto=values.get('auto_exposure') != 1, exposure=values.get('exposure_time_absolute'),
+                gain=values.get('gain'), brightness=values.get('brightness'))
+
+
+def set_camera(data):
+    name = data.get('camera')
+    if name not in CAMERAS:
+        raise ValueError('Unknown camera')
+    if not isinstance(data.get('auto'), bool):
+        raise ValueError('auto must be true or false')
+    for key, (low, high) in CAMERA_LIMITS.items():
+        v = data.get(key)
+        if type(v) is not int or not low <= v <= high:
+            raise ValueError(f'{key} must be a whole number {low}..{high}')
+    device = CAMERAS[name]
+    if not Path(device).exists():
+        raise ValueError(f'{name} camera is not connected')
+    base = ['v4l2-ctl', '-d', device]
+    steps = ([base + ['-c', 'auto_exposure=0']] if data['auto'] else
+             [base + ['-c', 'auto_exposure=1'], base + ['-c', f"exposure_time_absolute={data['exposure']}"]])
+    steps.append(base + ['-c', f"gain={data['gain']}", '-c', f"brightness={data['brightness']}"])
+    for cmd in steps:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=2)
+        if out.returncode:
+            raise ValueError('v4l2-ctl: ' + (out.stderr.strip() or 'failed'))
+    return read_camera(device)
 
 PAGE = (Path(__file__).with_name('page.html')).read_text(encoding='utf-8')
 
@@ -82,7 +133,7 @@ def main():
         parser.error('Shunt resistance must be positive and finite')
     lock = threading.Lock()
     stop = threading.Event()
-    shared = dict(fields={}, board_at=0., serial_error='Waiting for board', scan=None, cameras={})
+    shared = dict(fields={}, board_at=0., serial_error='Waiting for board', scan=None, cameras={}, camctl={})
     token = secrets.token_urlsafe(32)
     drive = None
     drive_worker = None
@@ -144,6 +195,19 @@ def main():
                     shared['serial_error'] = 'Board connection: '+str(exc)+'. Stop WASD/navigation before opening this viewer.'
                 stop.wait(2.)
 
+    def poll_camera_controls():
+        while not stop.is_set():
+            values = {}
+            for name, device in CAMERAS.items():
+                try:
+                    values[name] = read_camera(device)
+                except (OSError, subprocess.SubprocessError, ValueError):
+                    values[name] = None
+            with lock:
+                shared['camctl'] = values
+            stop.wait(2.)
+    threading.Thread(target=poll_camera_controls, daemon=True).start()
+
     class Handler(BaseHTTPRequestHandler):
         def drive_access(self):
             host = self.headers.get('Host', '')
@@ -166,6 +230,8 @@ def main():
 
         def do_POST(self):
             data = None
+            if self.path == '/camera':
+                return self.camera_post()
             if self.path != '/drive' or drive is None or not self.drive_access():
                 code, value = 403, {'error': 'Drive access denied'}
             else:
@@ -187,6 +253,29 @@ def main():
                 detail = {k: v for k, v in data.items() if k not in ('client', 'sequence')} if isinstance(data, dict) else {}
                 print(time.strftime('%H:%M:%S'), 'POST /drive', code, json.dumps(detail),
                       value.get('error', '') if code != 200 else 'settings=' + json.dumps(value.get('settings')), flush=True)
+            self.send(code, 'application/json', json.dumps(value).encode())
+
+        def camera_post(self):
+            data = None
+            if not self.drive_access():   # same host/origin/token check as driving
+                code, value = 403, {'error': 'Camera access denied'}
+            else:
+                try:
+                    self.connection.settimeout(1.)
+                    length = int(self.headers.get('Content-Length', '0'))
+                    if not 0 < length <= 512:
+                        raise ValueError('Invalid request size')
+                    data = json.loads(self.rfile.read(length))
+                    if not isinstance(data, dict):
+                        raise ValueError('Invalid camera command')
+                    readback = set_camera(data)
+                    with lock:
+                        shared['camctl'][data['camera']] = readback
+                    code, value = 200, {'camera': data['camera'], 'controls': readback}
+                except (ValueError, TypeError, OSError, subprocess.SubprocessError) as exc:
+                    code, value = 400, {'error': str(exc)}
+            print(time.strftime('%H:%M:%S'), 'POST /camera', code,
+                  json.dumps(data) if isinstance(data, dict) else '', value.get('error', ''), flush=True)
             self.send(code, 'application/json', json.dumps(value).encode())
 
         def log_message(self, *unused):
@@ -213,6 +302,7 @@ def main():
                         drive=drive_status, fields=fields, board_fresh=fresh,
                         imu_valid=fresh and fields.get('VALID') == '1',
                         current=board_values(fields, fresh, shunt), shunt_ohms=shunt,
+                        camctl=shared['camctl'], camera_limits=CAMERA_LIMITS,
                         serial_error=drive_status['error'] if drive_status else shared['serial_error'],
                         scan=dict(fresh=scan_fresh, points=scan[1] if scan_fresh else [],
                                   frame_label=scan[2] if scan else 'Waiting for scan'))).encode()

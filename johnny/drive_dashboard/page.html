@@ -23,6 +23,7 @@ details{margin-top:4px}summary{cursor:pointer;color:var(--dim);font-weight:600}.
 .setup label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--dim)}.setup select,.setup input{background:#0c1823;color:var(--text);border:1px solid #3a556c;border-radius:7px;padding:7px}
 .dirty{color:var(--warn)}.screen{aspect-ratio:4/3;background:#070d13;border-radius:8px;overflow:hidden;display:grid;place-items:center}.screen img,.screen canvas{width:100%;height:100%;object-fit:contain}img[hidden]{display:none}
 .cardhead{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}.cardhead h2{margin:0}.small{font-size:12px;padding:4px 9px}
+.camctl{margin-top:8px}.camctl label.slider{margin-top:8px}.camctl .row{display:flex;gap:8px;align-items:center;font-size:14px;margin-top:8px}.camctl code{font-size:12px;color:var(--dim);overflow-wrap:anywhere}
 .stopbar{position:fixed;left:0;right:0;bottom:0;padding:10px 22px;background:#0b131cf2;border-top:1px solid var(--line);z-index:3}.stopbar button{width:100%;padding:14px;background:#b3243c;border-color:#ff8a9c;font-weight:700;letter-spacing:.08em}
 </style>
 <header><h1>Swerve dashboard</h1><span id="conn" class="pill">Connecting…</span><span id="mode" class="pill" hidden></span><span id="batt" class="pill">Battery —</span><span id="imuPill" class="pill">IMU —</span></header>
@@ -148,8 +149,41 @@ function rows(id,items){$(id).replaceChildren(...items.flatMap(([a,b])=>{const x
 async function get(p){const r=await fetch(p,{headers:H,signal:AbortSignal.timeout(2500),cache:'no-store'});if(!r.ok)throw Error(r.status===401?'Access denied: open the complete link with #token=…':'Feed unavailable');return r;}
 function draw(scan){const c=$('scan'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);x.strokeStyle='#2a3e50';for(let i=1;i<=4;i++){x.beginPath();x.arc(300,225,i*50,0,Math.PI*2);x.stroke();}x.fillStyle='#4fa3ff';x.fillRect(296,221,8,8);if(scan.fresh){x.fillStyle='#5fd9b0';for(const [a,b] of scan.points)x.fillRect(300-b*50,225-a*50,2,2);}$('lidarStatus').textContent=scan.fresh?'Live · '+scan.points.length+' returns':'No fresh scan';$('frame').textContent=scan.frame_label+' · rings every metre';}
 for(const b of document.querySelectorAll('[data-rot]')){const n=b.dataset.rot;let a=n==='front'?180:0;try{const s=localStorage.getItem('sensor-view-angle-'+n);if(s!==null&&[0,90,180,270].includes(+s))a=+s;}catch(e){}const ap=()=>{$(n).style.transform='rotate('+a+'deg)';};b.onclick=()=>{a=(a+90)%360;ap();b.blur();try{localStorage.setItem('sensor-view-angle-'+n,a);}catch(e){}};ap();}
+// Camera controls: applied live with v4l2-ctl on the Pi. Exposure is capped at 330 (33 ms) so
+// manual exposure never drops below 30 fps. Auto exposure is not capped and can.
+const camUI={};
+for(const name of ['front','rear']){
+ const box=document.createElement('details');box.className='camctl';
+ box.innerHTML=`<summary>Exposure · gain · brightness</summary>
+  <div class="row"><label><input type="checkbox" data-k="auto"> Auto exposure</label><span class="hint" data-k="autoHint"></span></div>
+  <label class="slider"><span>Exposure</span><b data-k="exposureLbl"></b></label><input type="range" data-k="exposure" min="1" max="330" step="1">
+  <label class="slider"><span>Gain</span><b data-k="gainLbl"></b></label><input type="range" data-k="gain" min="0" max="100" step="1">
+  <label class="slider"><span>Brightness</span><b data-k="brightnessLbl"></b></label><input type="range" data-k="brightness" min="0" max="255" step="1">
+  <p class="hint">Resets when the camera script restarts. To keep these, start it with:<br><code data-k="cmd"></code></p>`;
+ document.querySelector(`[data-rot="${name}"]`).closest('section').append(box);
+ const q=k=>box.querySelector(`[data-k="${k}"]`),ui=camUI[name]={box,q,editUntil:0,timer:null,known:false};
+ const paint=()=>{const a=q('auto').checked,e=+q('exposure').value;q('exposure').disabled=a;
+  q('exposureLbl').textContent=a?'auto':`${e} (${(e/10).toFixed(1)} ms)`;q('gainLbl').textContent=q('gain').value;q('brightnessLbl').textContent=q('brightness').value;
+  q('autoHint').textContent=a?'may drop below 30 fps in dim light':'fixed · keeps 30 fps';
+  q('cmd').textContent=`EXPOSURE=${a?'auto':e} GAIN=${q('gain').value} BRIGHTNESS=${q('brightness').value} bash start_cameras_fast.sh`;};
+ ui.paint=paint;
+ const push=()=>{ui.editUntil=Date.now()+1500;paint();clearTimeout(ui.timer);ui.timer=setTimeout(async()=>{
+  const body={camera:name,auto:q('auto').checked,exposure:+q('exposure').value,gain:+q('gain').value,brightness:+q('brightness').value};
+  try{const r=await fetch('/camera',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(3000)});
+   const v=await r.json();if(!r.ok)throw Error(v.error||('HTTP '+r.status));ui.editUntil=Date.now()+800;}
+  catch(e){say(name+' camera: '+e.message);ui.editUntil=0;}},150);};
+ for(const k of ['auto','exposure','gain','brightness'])q(k).addEventListener('input',push);
+ for(const k of ['exposure','gain','brightness'])q(k).addEventListener('change',()=>q(k).blur());
+}
+function renderCamctl(all){for(const name of ['front','rear']){const ui=camUI[name],c=all?.[name];
+ ui.box.querySelector('summary').textContent='Exposure · gain · brightness'+(c?'':' — camera not found');
+ for(const k of ['auto','exposure','gain','brightness'])ui.q(k).disabled=!c;
+ if(!c)continue;
+ if(Date.now()>=ui.editUntil){ui.q('auto').checked=c.auto;if(Number.isFinite(c.exposure))ui.q('exposure').value=Math.min(330,c.exposure);
+  ui.q('gain').value=c.gain;ui.q('brightness').value=c.brightness;}
+ ui.paint();}}
 function offline(m){stopNow();$('conn').textContent=m;$('conn').className='pill bad';if(drive){drive={...drive,fresh:false,ready:false};renderDrive(drive);}rows('imu',[]);rows('current',[]);draw({fresh:false,frame_label:'No scan'});}
-async function state(){try{const s=await(await get('/state')).json();$('conn').textContent='Connected';$('conn').className='pill ok';draw(s.scan);if(s.drive)renderDrive(s.drive);
+async function state(){try{const s=await(await get('/state')).json();$('conn').textContent='Connected';$('conn').className='pill ok';draw(s.scan);if(s.drive)renderDrive(s.drive);renderCamctl(s.camctl);
  const f=s.fields,c=s.current;$('imuStatus').textContent=s.board_fresh?(f.VALID==='1'?'Live · valid':'Live · IMU invalid'):'No fresh board data';
  rows('imu',[['Heading (°)',s.imu_valid?f.H:'—'],['Roll (°)',s.imu_valid?f.R:'—'],['Pitch (°)',s.imu_valid?f.P:'—'],['Calibration S/G/A/M',s.board_fresh?f.CAL:'—'],['Communication error',s.board_fresh?f.ERR:'—']]);
  $('imuPill').textContent='IMU CAL '+(s.board_fresh?f.CAL:'—');$('imuPill').className='pill '+(s.board_fresh&&f.CAL==='3/3/3/3'?'ok':'warn');
