@@ -23,7 +23,8 @@ p.add_argument('--dashboard', default='http://127.0.0.1:8006')
 p.add_argument('--token', required=True)
 p.add_argument('--hz', type=float, default=50)
 p.add_argument('--window', type=float, default=3.0, help='seconds summarised before each disarm')
-p.add_argument('--jump', type=int, default=150, help='flag readback jumps bigger than this (us/sample)')
+p.add_argument('--jump', type=int, default=20, help='flag readback differing from command by more (us)')
+p.add_argument('--no-volts', action='store_true', help='hide INA219 volts (use while it is bypassed)')
 p.add_argument('--out', required=True)
 a = p.parse_args()
 
@@ -31,12 +32,20 @@ THROTTLE_BITS = {0: 'UNDERVOLTAGE NOW', 1: 'freq capped', 2: 'throttled', 3: 'te
                  16: 'undervoltage since boot', 18: 'throttled since boot'}
 
 
+THROTTLE_WHY = None
+
+
 def throttled():
+    global THROTTLE_WHY
     try:
-        out = subprocess.run(['vcgencmd', 'get_throttled'], capture_output=True, text=True, timeout=1).stdout
-        return int(out.strip().split('=')[1], 16)
+        out = subprocess.run(['vcgencmd', 'get_throttled'], capture_output=True, text=True, timeout=1)
+        return int(out.stdout.strip().split('=')[1], 16)
+    except FileNotFoundError:
+        THROTTLE_WHY = 'vcgencmd not installed (Ubuntu: sudo apt install libraspberrypi-bin)'
     except Exception:
-        return None
+        THROTTLE_WHY = ('vcgencmd failed: ' + ((out.stderr or out.stdout).strip() if 'out' in locals() else '?')
+                        + ' (try: sudo usermod -aG video $USER, then log in again)')
+    return None
 
 
 def describe(bits):
@@ -55,7 +64,9 @@ req = urllib.request.Request(a.dashboard + '/state', headers={'X-Sensor-Token': 
 recent = collections.deque()
 t0 = time.monotonic()
 prev, prev_state, prev_err, thr, thr_at, n, events = None, None, None, throttled(), 0., 0, 0
-print(f'Start: Pi power flags = {describe(thr)} (0x{thr or 0:x}). Logging; Ctrl+C to stop.', flush=True)
+mismatch = [0, 0]
+print(f'Start: Pi power flags = {describe(thr)}' + (f' — {THROTTLE_WHY}' if thr is None else f' (0x{thr:x})')
+      + '. Logging; Ctrl+C to stop.', flush=True)
 f = open(a.out, 'w', newline='')
 w = csv.writer(f)
 w.writerow(['t', 'state', 'steering', 'cmd_front', 'cmd_rear', 'S1', 'S2', 'D1', 'D2', 'ARM', 'CMDERR',
@@ -80,12 +91,17 @@ try:
         cf, cr = (d.get('pulses') or (None, None))[:2]
         s1, s2, d1, d2 = num(fl.get('S1')), num(fl.get('S2')), num(fl.get('D1')), num(fl.get('D2'))
         age = d.get('age')
-        volts = (s.get('current') or {}).get('volts')
+        volts = None if a.no_volts else (s.get('current') or {}).get('volts')
         state, err = d.get('state'), d.get('error') or d.get('message')
-        if prev:
-            for name, v, pv in (('S1', s1, prev[0]), ('S2', s2, prev[1])):
-                if v and pv and abs(v - pv) > a.jump:
-                    notes.append(f'{name} readback jumped {pv}->{v}')
+        # Snap steering legitimately jumps center<->lock, so only flag readback that disagrees with the
+        # command for 3+ samples in a row (one-sample lag is normal), or leaves 1000..2000 us.
+        for i, (name, v, c) in enumerate((('S1', s1, cf), ('S2', s2, cr))):
+            bad = bool(v and c and abs(v - c) > a.jump)
+            mismatch[i] = mismatch[i] + 1 if bad else 0
+            if mismatch[i] == 3:
+                notes.append(f'{name} readback {v} != commanded {c}')
+            if v and not 1000 <= v <= 2000:
+                notes.append(f'{name} readback {v} outside 1000..2000')
         if age is not None and age > .2:
             notes.append(f'telemetry gap {age:.2f}s')
         if fl.get('CMDERR', '000') not in ('000', None):
@@ -110,6 +126,13 @@ try:
             rb = [x for r in rows for x in (r[5], r[6]) if x]
             cmd = [x for r in rows for x in (r[3], r[4]) if x]
             flagged = [f'  t={r[0]} {r[14]}' for r in rows if r[14]]
+            # Timeline every ~0.25 s: what steering and the motors were doing when it went wrong.
+            tl, last_t = [], -1.
+            for r in rows:
+                if float(r[0]) - last_t >= .25:
+                    tl.append(f'    t={float(r[0]):7.2f} cmd {r[3]}/{r[4]} readback {r[5]}/{r[6]} duty {r[7]}/{r[8]}')
+                    last_t = float(r[0])
+            flagged = ['  timeline (front/rear pulses, M1/M2 duty %):'] + tl + flagged
             print(f'\n=== DISARM #{events} at t={t:.2f} ({time.strftime("%H:%M:%S")}) — last {a.window:.0f} s ===\n'
                   f'  commanded pulses {min(cmd, default="-")}..{max(cmd, default="-")}  '
                   f'readback {min(rb, default="-")}..{max(rb, default="-")}\n'
