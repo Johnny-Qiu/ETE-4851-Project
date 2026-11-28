@@ -24,19 +24,40 @@ p.add_argument('--token', required=True)
 p.add_argument('--hz', type=float, default=50)
 p.add_argument('--window', type=float, default=3.0, help='seconds summarised before each disarm')
 p.add_argument('--jump', type=int, default=20, help='flag readback differing from command by more (us)')
+p.add_argument('--lag', type=float, default=.3, help='flag readback/command disagreement longer than this (s)')
 p.add_argument('--no-volts', action='store_true', help='hide INA219 volts (use while it is bypassed)')
 p.add_argument('--out', required=True)
 a = p.parse_args()
 
 THROTTLE_BITS = {0: 'UNDERVOLTAGE NOW', 1: 'freq capped', 2: 'throttled', 3: 'temp limit',
-                 16: 'undervoltage since boot', 18: 'throttled since boot'}
+                 16: 'undervoltage seen earlier', 18: 'throttled since boot'}
 
 
 THROTTLE_WHY = None
 
 
+def hwmon_undervolt():
+    """Pi kernel 'rpi_volt' hwmon: in0_lcrit_alarm = 1 while undervoltage. Readable without sudo."""
+    import glob
+    for d in glob.glob('/sys/class/hwmon/hwmon*'):
+        try:
+            if open(d + '/name').read().strip() == 'rpi_volt':
+                return int(open(d + '/in0_lcrit_alarm').read().strip())
+        except (OSError, ValueError):
+            pass
+    return None
+
+
+SEEN_UV = False
+
+
 def throttled():
-    global THROTTLE_WHY
+    """vcgencmd bits, or the hwmon fallback mapped to the same bits (0 now, 16 since logger start)."""
+    global THROTTLE_WHY, SEEN_UV
+    uv = hwmon_undervolt()
+    if uv is not None:
+        SEEN_UV = SEEN_UV or bool(uv)
+        return (uv << 0) | (SEEN_UV << 16)
     try:
         out = subprocess.run(['vcgencmd', 'get_throttled'], capture_output=True, text=True, timeout=1)
         return int(out.stdout.strip().split('=')[1], 16)
@@ -64,9 +85,21 @@ req = urllib.request.Request(a.dashboard + '/state', headers={'X-Sensor-Token': 
 recent = collections.deque()
 t0 = time.monotonic()
 prev, prev_state, prev_err, thr, thr_at, n, events = None, None, None, throttled(), 0., 0, 0
-mismatch = [0, 0]
+mismatch = [None, None]
 print(f'Start: Pi power flags = {describe(thr)}' + (f' — {THROTTLE_WHY}' if thr is None else f' (0x{thr:x})')
       + '. Logging; Ctrl+C to stop.', flush=True)
+# One logger at a time: a second copy opening the same CSV with 'w' wiped the first one's data
+# (2026-11-27 grass test). The lock is released automatically when the process exits.
+import fcntl
+lock_file = open('/tmp/servo_dip_log.lock', 'w')
+try:
+    fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError:
+    raise SystemExit('Another servo_dip_log.py is already running (stop it: pkill -INT -f servo_dip_log.py). '
+                     'Nothing was overwritten.')
+import os
+if os.path.exists(a.out) and os.path.getsize(a.out) > 0:
+    raise SystemExit(f'{a.out} already exists; pick a new --out name so old data is kept.')
 f = open(a.out, 'w', newline='')
 w = csv.writer(f)
 w.writerow(['t', 'state', 'steering', 'cmd_front', 'cmd_rear', 'S1', 'S2', 'D1', 'D2', 'ARM', 'CMDERR',
@@ -93,13 +126,17 @@ try:
         age = d.get('age')
         volts = None if a.no_volts else (s.get('current') or {}).get('volts')
         state, err = d.get('state'), d.get('error') or d.get('message')
-        # Snap steering legitimately jumps center<->lock, so only flag readback that disagrees with the
-        # command for 3+ samples in a row (one-sample lag is normal), or leaves 1000..2000 us.
+        # Board telemetry is ~10 Hz, so readback trails each steering change by up to ~165 ms (measured).
+        # Only flag disagreement lasting longer than --lag seconds, or readback outside 1000..2000 us.
         for i, (name, v, c) in enumerate((('S1', s1, cf), ('S2', s2, cr))):
-            bad = bool(v and c and abs(v - c) > a.jump)
-            mismatch[i] = mismatch[i] + 1 if bad else 0
-            if mismatch[i] == 3:
-                notes.append(f'{name} readback {v} != commanded {c}')
+            bad = bool(v and c and abs(v - c) > a.jump and state == 'armed')
+            if not bad:
+                mismatch[i] = None
+            elif mismatch[i] is None:
+                mismatch[i] = t
+            elif mismatch[i] is not False and t - mismatch[i] > a.lag:
+                notes.append(f'{name} readback {v} != commanded {c} for >{a.lag:.1f}s')
+                mismatch[i] = False   # reported; wait until it agrees again
             if v and not 1000 <= v <= 2000:
                 notes.append(f'{name} readback {v} outside 1000..2000')
         if age is not None and age > .2:
