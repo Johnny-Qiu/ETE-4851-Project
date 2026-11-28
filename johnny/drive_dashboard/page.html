@@ -15,7 +15,7 @@ main{padding:18px 22px 96px;display:grid;gap:16px;grid-template-columns:repeat(6
 .msg{color:var(--dim);min-height:2.9em}.notice{padding:8px 10px;border-radius:8px;font-size:14px;margin:8px 0}.notice.bad{background:#3a1820;color:#ffc2cb}.notice.good{background:#123327;color:#bff3df}
 button,select,input{font:inherit}button{padding:10px 16px;border-radius:9px;border:1px solid #3d6a8f;background:#1d3a55;color:var(--text);cursor:pointer}button:disabled{opacity:.35;cursor:not-allowed}
 button.primary{background:#1f5a46;border-color:#3f9b7c}.keys{display:grid;grid-template-columns:repeat(3,64px);gap:8px;justify-content:center;margin:6px 0 12px}
-.key{height:58px;font-size:22px;font-weight:700;background:#182b3c;border-color:#3a556c;user-select:none}.key.on{background:#25795f;border-color:#7fffd4;box-shadow:0 0 16px #5fd9b040}#kw{grid-column:2}
+.key{height:58px;font-size:22px;font-weight:700;background:#182b3c;border-color:#3a556c;user-select:none}.key.on{background:#25795f;border-color:#7fffd4;box-shadow:0 0 16px #5fd9b040}#kw{grid-area:1/2}#ka{grid-area:2/1}#ks{grid-area:2/2}#kd{grid-area:2/3}
 .hint{color:var(--dim);font-size:13px}.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:14px}.kv b{font-weight:500;color:var(--dim)}.kv span{text-align:right;font-variant-numeric:tabular-nums}
 label.slider{display:flex;justify-content:space-between;font-size:14px;margin-top:6px}input[type=range]{width:100%;accent-color:var(--ok)}
 .steerbar{position:relative;height:12px;border-radius:6px;background:#0c1823;border:1px solid var(--line);margin:6px 0 2px}.steerbar i{position:absolute;top:-3px;width:4px;height:16px;border-radius:2px;background:var(--accent);left:50%;transform:translateX(-50%)}.steerbar:after{content:'';position:absolute;left:50%;top:0;bottom:0;border-left:1px dashed #456}
@@ -165,7 +165,7 @@ function draw(scan){const c=$('scan'),x=c.getContext('2d');x.clearRect(0,0,c.wid
  const r=lidarRot*Math.PI/180,cs=Math.cos(r),sn=Math.sin(r);
  const place=(f,l)=>{if(lidarMirror)l=-l;const f2=f*cs-l*sn,l2=f*sn+l*cs;return [300-l2*k,225-f2*k];};  // f=forward, l=left (metres)
  x.fillStyle='#4fa3ff';x.fillRect(296,221,8,8);
- const [tx,ty]=place(.75,0);x.fillStyle='#9db0c1';x.font='13px system-ui';x.textAlign='center';x.fillText('▲ front',tx,ty);
+ const [tx,ty]=place(30/k,0);  // fixed 30 px ahead of the car at every Rangex.fillStyle='#9db0c1';x.font='13px system-ui';x.textAlign='center';x.textBaseline='middle';x.fillText('▲ front',tx,ty);
  if(scan.fresh){x.fillStyle='#5fd9b0';for(const [a,b] of scan.points){const [px,py]=place(a,b);x.fillRect(px,py,2,2);}}
  $('lidarStatus').textContent=scan.fresh?'Live · '+scan.points.length+' returns':'No fresh scan';$('frame').textContent=scan.frame_label+(lidarMirror?' · mirrored':'')+(lidarRot?` · rotated ${lidarRot}°`:'')+` · rings every ${step===1?'metre':step+' m'}`;}
 for(const b of document.querySelectorAll('[data-rot]')){const n=b.dataset.rot;let a=n==='front'?180:0;try{const s=localStorage.getItem('sensor-view-angle-'+n);if(s!==null&&[0,90,180,270].includes(+s))a=+s;}catch(e){}const ap=()=>{$(n).style.transform='rotate('+a+'deg)';};b.onclick=()=>{a=(a+90)%360;ap();b.blur();try{localStorage.setItem('sensor-view-angle-'+n,a);}catch(e){}};ap();}
