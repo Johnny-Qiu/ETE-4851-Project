@@ -58,7 +58,7 @@ details{margin-top:4px}summary{cursor:pointer;color:var(--dim);font-weight:600}.
 </details></section>
 <section class="card span2"><div class="cardhead"><h2>Front camera</h2><button class="small" data-rot="front">Rotate</button></div><div class="screen"><img id="front" alt="Front camera" hidden></div><p class="hint" id="frontStatus">Waiting</p></section>
 <section class="card span2"><div class="cardhead"><h2>Rear camera</h2><button class="small" data-rot="rear">Rotate</button></div><div class="screen"><img id="rear" alt="Rear camera" hidden></div><p class="hint" id="rearStatus">Waiting</p></section>
-<section class="card span2"><div class="cardhead"><h2>LiDAR</h2><span><button class="small" id="lidarMirror" title="LiDAR mounted upside down: mirror left/right">Mirror: on</button> <button class="small" id="lidarRotate">Rotate</button></span></div><div class="screen"><canvas id="scan" width="600" height="450"></canvas></div><p class="hint"><span id="lidarStatus">Waiting</span> · <span id="frame">Rings every metre · missing returns are unknown space</span></p></section>
+<section class="card span2"><div class="cardhead"><h2>LiDAR</h2><span><button class="small" id="lidarMirror" title="LiDAR mounted upside down: mirror left/right">Mirror: on</button> <button class="small" id="lidarRotate">Rotate</button> <button class="small" id="lidarZoom" title="View radius">Range</button></span></div><div class="screen"><canvas id="scan" width="600" height="450"></canvas></div><p class="hint"><span id="lidarStatus">Waiting</span> · <span id="frame">Rings every metre · missing returns are unknown space</span></p></section>
 <section class="card span3"><h2>IMU</h2><p class="hint" id="imuStatus">Waiting</p><div class="kv" id="imu"></div><p class="hint">Calibration System / Gyro / Accel / Mag, 0–3. Lost when the Nucleo loses power.</p></section>
 <section class="card span3"><h2>Shared battery supply</h2><p class="hint" id="currentStatus">Waiting</p><div class="kv" id="current"></div><p class="hint" id="shunt"></p><p class="hint" id="serialStatus" style="color:var(--warn)"></p></section>
 </main>
@@ -149,19 +149,25 @@ function rows(id,items){$(id).replaceChildren(...items.flatMap(([a,b])=>{const x
 async function get(p){const r=await fetch(p,{headers:H,signal:AbortSignal.timeout(2500),cache:'no-store'});if(!r.ok)throw Error(r.status===401?'Access denied: open the complete link with #token=…':'Feed unavailable');return r;}
 // LiDAR view: display-only orientation. Mirror flips left/right (upside-down mount scans the other
 // way round); Rotate turns the view in 90-degree steps. Both saved in this browser.
+// PREVIEW BOOST (2026-11-27, temporary). To revert: LIDAR_POLL_MS=300, CAMERA_POLL_MS=300 and
+// LIDAR_ZOOMS=[4.5] (old fixed view); see also the PREVIEW BOOST block in drive_dashboard.py.
+const LIDAR_POLL_MS=100,CAMERA_POLL_MS=100;  // were 300 (one shared loop with state)
+const LIDAR_ZOOMS=[4.5,8,12];                 // view radius in metres; the Range button cycles
+let lidarView=LIDAR_ZOOMS[LIDAR_ZOOMS.length-1];try{const z=+localStorage.getItem('lidar-zoom');if(LIDAR_ZOOMS.includes(z))lidarView=z;}catch(e){}
 let lidarMirror=true,lidarRot=0;
 try{const m=localStorage.getItem('lidar-mirror');if(m!==null)lidarMirror=m==='1';const r=+localStorage.getItem('lidar-rot');if([0,90,180,270].includes(r))lidarRot=r;}catch(e){}
-function paintLidarButtons(){$('lidarMirror').textContent='Mirror: '+(lidarMirror?'on':'off');}
+function paintLidarButtons(){$('lidarMirror').textContent='Mirror: '+(lidarMirror?'on':'off');$('lidarZoom').textContent='Range: '+lidarView+' m';}
+$('lidarZoom').onclick=()=>{lidarView=LIDAR_ZOOMS[(LIDAR_ZOOMS.indexOf(lidarView)+1)%LIDAR_ZOOMS.length];try{localStorage.setItem('lidar-zoom',lidarView);}catch(e){}paintLidarButtons();$('lidarZoom').blur();};
 $('lidarMirror').onclick=()=>{lidarMirror=!lidarMirror;try{localStorage.setItem('lidar-mirror',lidarMirror?'1':'0');}catch(e){}paintLidarButtons();$('lidarMirror').blur();};
 $('lidarRotate').onclick=()=>{lidarRot=(lidarRot+90)%360;try{localStorage.setItem('lidar-rot',lidarRot);}catch(e){}$('lidarRotate').blur();};
 paintLidarButtons();
-function draw(scan){const c=$('scan'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);x.strokeStyle='#2a3e50';for(let i=1;i<=4;i++){x.beginPath();x.arc(300,225,i*50,0,Math.PI*2);x.stroke();}
+function draw(scan){const c=$('scan'),x=c.getContext('2d');x.clearRect(0,0,c.width,c.height);x.strokeStyle='#2a3e50';const k=225/lidarView,step=lidarView>6?2:1;for(let m=step;m<=lidarView*1.34;m+=step){x.beginPath();x.arc(300,225,m*k,0,Math.PI*2);x.stroke();}
  const r=lidarRot*Math.PI/180,cs=Math.cos(r),sn=Math.sin(r);
- const place=(f,l)=>{if(lidarMirror)l=-l;const f2=f*cs-l*sn,l2=f*sn+l*cs;return [300-l2*50,225-f2*50];};  // f=forward, l=left (metres)
+ const place=(f,l)=>{if(lidarMirror)l=-l;const f2=f*cs-l*sn,l2=f*sn+l*cs;return [300-l2*k,225-f2*k];};  // f=forward, l=left (metres)
  x.fillStyle='#4fa3ff';x.fillRect(296,221,8,8);
  const [tx,ty]=place(.75,0);x.fillStyle='#9db0c1';x.font='13px system-ui';x.textAlign='center';x.fillText('▲ front',tx,ty);
  if(scan.fresh){x.fillStyle='#5fd9b0';for(const [a,b] of scan.points){const [px,py]=place(a,b);x.fillRect(px,py,2,2);}}
- $('lidarStatus').textContent=scan.fresh?'Live · '+scan.points.length+' returns':'No fresh scan';$('frame').textContent=scan.frame_label+(lidarMirror?' · mirrored':'')+(lidarRot?` · rotated ${lidarRot}°`:'')+' · rings every metre';}
+ $('lidarStatus').textContent=scan.fresh?'Live · '+scan.points.length+' returns':'No fresh scan';$('frame').textContent=scan.frame_label+(lidarMirror?' · mirrored':'')+(lidarRot?` · rotated ${lidarRot}°`:'')+` · rings every ${step===1?'metre':step+' m'}`;}
 for(const b of document.querySelectorAll('[data-rot]')){const n=b.dataset.rot;let a=n==='front'?180:0;try{const s=localStorage.getItem('sensor-view-angle-'+n);if(s!==null&&[0,90,180,270].includes(+s))a=+s;}catch(e){}const ap=()=>{$(n).style.transform='rotate('+a+'deg)';};b.onclick=()=>{a=(a+90)%360;ap();b.blur();try{localStorage.setItem('sensor-view-angle-'+n,a);}catch(e){}};ap();}
 // Camera controls: applied live with v4l2-ctl on the Pi. Exposure is capped at 330 (33 ms) so
 // manual exposure never drops below 30 fps. Auto exposure is not capped and can.
@@ -198,7 +204,7 @@ function renderCamctl(all){for(const name of ['front','rear']){const ui=camUI[na
   ui.q('gain').value=c.gain;ui.q('brightness').value=c.brightness;}
  ui.paint();}}
 function offline(m){stopNow();$('conn').textContent=m;$('conn').className='pill bad';if(drive){drive={...drive,fresh:false,ready:false};renderDrive(drive);}rows('imu',[]);rows('current',[]);draw({fresh:false,frame_label:'No scan'});}
-async function state(){try{const s=await(await get('/state')).json();$('conn').textContent='Connected';$('conn').className='pill ok';draw(s.scan);if(s.drive)renderDrive(s.drive);renderCamctl(s.camctl);
+async function state(){try{const s=await(await get('/state')).json();$('conn').textContent='Connected';$('conn').className='pill ok';if(s.drive)renderDrive(s.drive);renderCamctl(s.camctl);
  const f=s.fields,c=s.current;$('imuStatus').textContent=s.board_fresh?(f.VALID==='1'?'Live · valid':'Live · IMU invalid'):'No fresh board data';
  rows('imu',[['Heading (°)',s.imu_valid?f.H:'—'],['Roll (°)',s.imu_valid?f.R:'—'],['Pitch (°)',s.imu_valid?f.P:'—'],['Calibration S/G/A/M',s.board_fresh?f.CAL:'—'],['Communication error',s.board_fresh?f.ERR:'—']]);
  $('imuPill').textContent='IMU CAL '+(s.board_fresh?f.CAL:'—');$('imuPill').className='pill '+(s.board_fresh&&f.CAL==='3/3/3/3'?'ok':'warn');
@@ -207,5 +213,7 @@ async function state(){try{const s=await(await get('/state')).json();$('conn').t
  $('shunt').textContent='Assumes '+s.shunt_ohms+' Ω shunt — verify the actual value.';$('serialStatus').textContent=s.serial_error||'';}
  catch(e){offline(e.message);}}
 const urls={};async function camera(n){try{const b=await(await get('/'+n+'.jpg')).blob(),u=URL.createObjectURL(b);$(n).src=u;$(n).hidden=false;if(urls[n])URL.revokeObjectURL(urls[n]);urls[n]=u;$(n+'Status').textContent='Live';}catch(e){$(n).hidden=true;$(n+'Status').textContent='No fresh image';}}
-async function loop(){if(!document.hidden)await Promise.all([state(),camera('front'),camera('rear')]);setTimeout(loop,300);}loop();
+async function scanLoop(){if(!document.hidden){try{draw(await(await get('/scan')).json());}catch(e){draw({fresh:false,frame_label:'No scan'});}}setTimeout(scanLoop,LIDAR_POLL_MS);}
+async function camLoop(){if(!document.hidden)await Promise.all([camera('front'),camera('rear')]);setTimeout(camLoop,CAMERA_POLL_MS);}
+async function loop(){if(!document.hidden)await state();setTimeout(loop,300);}loop();scanLoop();camLoop();
 </script></html>

@@ -34,6 +34,12 @@ CAMERAS = {
 # can never lower the frame rate. Auto exposure has no such cap (it dropped to ~25 fps in room light).
 CAMERA_LIMITS = dict(exposure=(1, 330), gain=(0, 100), brightness=(0, 255))
 
+# PREVIEW BOOST (2026-11-27, temporary). Display only: ROS topics are unchanged (cameras 30 fps,
+# /scan 10 Hz, full range). To revert: CAMERA_PREVIEW_INTERVAL_S = .2 (5 fps) and
+# LIDAR_DRAW_MAX_M = 4.5, plus the PREVIEW BOOST constants in page.html.
+CAMERA_PREVIEW_INTERVAL_S = .1   # was .2: 10 fps JPEG preview per camera
+LIDAR_DRAW_MAX_M = None          # was 4.5; None = everything up to the sensor's range_max
+
 
 def read_camera(device):
     if not Path(device).exists():
@@ -146,7 +152,7 @@ def main():
         now = time.monotonic()
         with lock:
             previous = shared['cameras'].get(name)
-        if previous and now-previous[0] < .2:
+        if previous and now-previous[0] < CAMERA_PREVIEW_INTERVAL_S:
             return
         stamp = msg.header.stamp.sec+msg.header.stamp.nanosec/1e9
         if not -.1 <= node.get_clock().now().nanoseconds/1e9-stamp <= 1.:
@@ -168,7 +174,7 @@ def main():
         points = []
         for i in range(0, len(msg.ranges), max(1, math.ceil(len(msg.ranges)/720))):
             radius = msg.ranges[i]
-            if math.isfinite(radius) and msg.range_min < radius < min(msg.range_max, 4.5):
+            if math.isfinite(radius) and msg.range_min < radius < min(msg.range_max, LIDAR_DRAW_MAX_M or msg.range_max):
                 angle = msg.angle_min+i*msg.angle_increment+yaw
                 points.append([radius*math.cos(angle), radius*math.sin(angle)])
         with lock:
@@ -296,16 +302,18 @@ def main():
                     if drive_status is not None:
                         fields = drive_status['fields']
                         fresh = drive_status['fresh']
-                    scan = shared['scan']
-                    scan_fresh = bool(scan and now-scan[0] < .8)
                     payload = json.dumps(dict(
                         drive=drive_status, fields=fields, board_fresh=fresh,
                         imu_valid=fresh and fields.get('VALID') == '1',
                         current=board_values(fields, fresh, shunt), shunt_ohms=shunt,
                         camctl=shared['camctl'], camera_limits=CAMERA_LIMITS,
-                        serial_error=drive_status['error'] if drive_status else shared['serial_error'],
-                        scan=dict(fresh=scan_fresh, points=scan[1] if scan_fresh else [],
-                                  frame_label=scan[2] if scan else 'Waiting for scan'))).encode()
+                        serial_error=drive_status['error'] if drive_status else shared['serial_error'])).encode()
+                    code, mime = 200, 'application/json'
+                elif path == '/scan':  # polled on its own by the page (~10 Hz)
+                    scan = shared['scan']
+                    scan_fresh = bool(scan and now-scan[0] < .8)
+                    payload = json.dumps(dict(fresh=scan_fresh, points=scan[1] if scan_fresh else [],
+                                              frame_label=scan[2] if scan else 'Waiting for scan')).encode()
                     code, mime = 200, 'application/json'
                 else:
                     frame = shared['cameras'].get(path[1:-4]) if path in ('/front.jpg', '/rear.jpg') else None
